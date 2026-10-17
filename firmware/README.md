@@ -1,0 +1,103 @@
+# ESP32 環境センサ・モニタ (firmware)
+
+ESP32 DevKit-C に接続した **BME680**・**MPU-9250**・**ST7789 液晶**・**USR-ES1 (W5500)** を
+まとめて扱う Arduino ファームウェアです。PlatformIO / Espressif ESP32 Dev Module 用。
+
+- 画面 **左**: BME680 の温湿度・気圧・ガス (バー付き) と、USR-ES1 で受信した一言メッセージ
+- 画面 **右**: MPU-9250 の加速度 / ジャイロ / 磁気を各軸グラフ表示
+- PC とは USR-ES1 経由の **TCP** (ESP32 = サーバ) でやり取り
+
+```
+platformio.ini   … ビルド設定 (TFT_eSPI のピンは build_flags で指定)
+include/config.h … ピン割り当て・アドレス・周期などの設定 (最初にここを見る)
+src/main.cpp     … 本体 (センサ読出し / 描画 / TCP をノンブロッキングで周期実行)
+pc/send_message.py … PC 側の送信スクリプト (Python3 標準ライブラリのみ)
+docs/PINOUT.txt    … ピン割り当て・配線メモ (要点だけのテキスト)
+docs/PROTOCOL.txt  … TCP 仕様と PC スクリプトの使い方
+```
+
+## ピン割り当て (要点)
+
+詳細・注意点は [`docs/PINOUT.txt`](docs/PINOUT.txt) を参照。実体定義は `include/config.h`。
+
+| 信号 | GPIO | 接続先 |
+|------|------|--------|
+| I2C SDA | 21 | BME680 / MPU-9250 (共有) |
+| I2C SCL | 22 | BME680 / MPU-9250 (共有) |
+| SPI SCK | 14 | ST7789 / USR-ES1 (共有) |
+| SPI MOSI | 13 | ST7789 / USR-ES1 (共有) |
+| SPI MISO | 12 | USR-ES1 のみ |
+| ST7789 CS | 15 | ST7789 |
+| ST7789 DC | 2 | ST7789 |
+| ST7789 RST | 4 | ST7789 |
+| USR-ES1 CS | 18 | USR-ES1 (W5500) |
+
+> メモ: `sensor.kicad_sch` のグローバルラベルは VSPI (CLK=18 等) 表記ですが、
+> 指示どおり ST7789 CS=15 / USR-ES1 CS=18 とし、SPI データ線を GPIO12/13/14 に
+> 割り当てています (CLK=18 と USR-ES1 CS=18 の衝突を避けるため)。
+> ST7789 は書き込み専用なので MISO は USR-ES1 のみが駆動します。
+
+## ビルドと書き込み
+
+PlatformIO をインストール済みの環境で、`firmware/` を開いて:
+
+```sh
+pio run                 # ビルド
+pio run -t upload       # 書き込み (USB 接続)
+pio device monitor      # シリアルモニタ (115200bps)
+```
+
+`platformio.ini` の `lib_deps` は以下を自動取得します。
+
+| ライブラリ | 用途 |
+|-----------|------|
+| `bodmer/TFT_eSPI` | ST7789 表示 (高速・transactions 対応) |
+| `adafruit/Adafruit BME680 Library` | 温湿度/気圧/ガス (ノンブロッキング API 使用) |
+| `bolderflight/Bolder Flight Systems MPU9250` | MPU-9250 (I2C, 9軸) |
+| `khoih-prog/Ethernet_Generic` | W5500 TCP (ESP32 対応) |
+
+## 使い方
+
+1. LAN ケーブルで PC と USR-ES1 を直結 (または同一セグメントのハブ経由)。
+2. PC の IP を `192.168.1.10/24` など ESP32 と同一セグメントに固定。
+3. 送信:
+
+```sh
+python pc/send_message.py "hello"
+python pc/send_message.py            # 対話モード (空行で終了)
+```
+
+ESP32 側は受信すると画面左下の MSG 欄に折返し表示し、`OK` を返します。
+仕様は [`docs/PROTOCOL.txt`](docs/PROTOCOL.txt)。
+
+## 処理落ち対策 (設計方針)
+
+- `loop()` 内で `delay()` せず、すべて `millis()` の周期判定で非ブロッキング実行。
+  - MPU-9250: 5ms 毎 (約 200Hz) に `readSensor()`
+  - BME680 : 3 秒毎に `beginReading()` を開始し、`remainingReadingMillis()` が
+    0 になったら `endReading()`。ガスヒータ待ちでループを止めない。
+  - 画面   : 80ms 毎 (約 12.5fps)。`startWrite()/endWrite()` で 1 フレームを
+    まとめて転送し、数値は `setTextPadding()` で前回文字を消してゴーストを防ぐ。
+  - TCP    : 毎ループ `server.available()` と受信バッファをチェック。
+- ST7789 と W5500 は **SPI バスを共有**します。TFT_eSPI も W5500 も
+  `SPI.beginTransaction()/endTransaction()` を使うため、CS の競合は起きません。
+  描画と TCP 送受信を同時に行わないよう、`loop()` で順に処理しています。
+
+## トラブルシューティング
+
+| 症状 | 確認 |
+|------|------|
+| 画面が真っ暗/白 | ST7789 の CS(15)/DC(2)/RST(4)、バックライト(BLK→3V3)、SPI 12/13/14 を確認 |
+| シリアルに `BME680: not found` | I2C 21/22、3V3。アドレスは 0x77→0x76 を自動試行 |
+| シリアルに `MPU9250: not found` | I2C 21/22、アドレスは 0x68→0x69 を自動試行 |
+| `Ethernet: W5500 not found` | USR-ES1 の CS(18)/SPI、3V3。RST は 3.3V 固定か |
+| PC から繋がらない | PC の IP を 192.168.1.x/24 に固定、ポート 5000、FW を確認 |
+| 画面更新がカクつく | `DRAW_PERIOD_MS` を大きく、`SPI_FREQUENCY` を下げる (platformio.ini) |
+
+## 変更履歴 / ログ (log & doc)
+
+- 2026-10-17 初版。BME680/MPU-9250/ST7789/USR-ES1 を統合。TCP サーバ (5000) と
+  PC 送信スクリプトを追加。ピンは ST7789 CS=15, USR-ES1 CS=18, SPI=12/13/14 に確定。
+- 既知の対応: `Ethernet_Generic 2.8.1` は Arduino-ESP32 core 3.x の
+  `Server::begin(uint16_t)` を実装していないため、`src/main.cpp` 内の薄い
+  ラッパ `TcpServer` で回避している (core へのパッチ不要)。
