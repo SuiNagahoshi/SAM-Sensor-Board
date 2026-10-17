@@ -31,10 +31,19 @@ docs/PROTOCOL.txt  … TCP 仕様と PC スクリプトの使い方
 | ST7789 RST | 17 | ST7789 |
 | ST7789 BLK | 3V3 | バックライト (直結) |
 | ST7789 MISO | 未使用 | (書き込み専用) |
-| USR-ES1 CS | 未確定 | 実配線に合わせて設定 (暫定 5) |
+| USR-ES1 SCLK | 18 | ST7789 SCK と共通バス |
+| USR-ES1 MOSI | 23 | ST7789 MOSI と共通バス |
+| USR-ES1 MISO | 13 | W5500 → ESP32 (**下記の注意参照**) |
+| USR-ES1 CS | 16 | W5500 |
+| USR-ES1 RST | 4 | W5500 (アクティブ Low) |
+| USR-ES1 INT | 未接続 | — |
 
-> USR-ES1(W5500) の配線はまだ確定していません。SCLK / MOSI / MISO / CS / RST の
-> 実際の GPIO を教えてもらい次第、`include/config.h` を更新します。INT は未接続です。
+> **W5500 の MISO 線は GPIO13 へ移してください。**
+> 指示では MISO=GPIO19 ですが、GPIO19 は液晶の DC/RS が使っています。DC は液晶
+> 専用の制御出力で SPI のデータ線ではないため、入力である MISO と同じ GPIO には
+> 同居できません。`include/config.h` の `PIN_SPI_MISO` は 13 にしてあります
+> (別の空き GPIO に変える場合は `config.h` を合わせてください)。
+> MISO 線を移すまでの間も、液晶 (ENV) とセンサ (IMU) はこのままで動作します。
 
 ## ビルドと書き込み
 
@@ -86,10 +95,10 @@ ESP32 側は受信すると画面左下の MSG 欄に折返し表示し、`OK` �
 
 | 症状 | 確認 |
 |------|------|
-| 画面が真っ暗/白 | ST7789 の CS(15)/DC(2)/RST(4)、バックライト(BLK→3V3)、SPI 12/13/14 を確認 |
+| 画面が真っ暗/白 | ST7789 の CS(15)/DC(19)/RST(17)、バックライト(BLK→3V3)、SCK(18)/MOSI(23) を確認 |
 | シリアルに `BME680: not found` | I2C 21/22、3V3。アドレスは 0x77→0x76 を自動試行 |
-| シリアルに `MPU9250: not found` | I2C 21/22、アドレスは 0x68→0x69 を自動試行 |
-| `Ethernet: W5500 not found` | USR-ES1 の CS(18)/SPI、3V3。RST は 3.3V 固定か |
+| シリアルに `MPU9250: not found` | I2C 21/22、アドレスは 0x68→0x69 を自動試行。起動ログの `I2C scan` と `begin()=` の値も確認 |
+| `Ethernet: W5500 not found` | USR-ES1 の CS(16)/RST(4)/MISO(13)、3V3。MISO が GPIO19 のままだと検出できない |
 | PC から繋がらない | PC の IP を 192.168.1.x/24 に固定、ポート 5000、FW を確認 |
 | 画面更新がカクつく | `DRAW_PERIOD_MS` を大きく、`SPI_FREQUENCY` を下げる (platformio.ini) |
 
@@ -103,6 +112,9 @@ ESP32 側は受信すると画面左下の MSG 欄に折返し表示し、`OK` �
 - 2026-10-18 液晶の表示を実機で確認 (`tft_test` で色が切り替わる)。ブレッドボード
   配線では 40MHz が不安定だったため SPI クロックを 10MHz に低下。安定確認後に
   20〜40MHz へ上げてよい (platformio.ini の SPI_FREQUENCY)。
+- 2026-10-18 USR-ES1(W5500) の配線を反映: CS=16, RST=4 (リセットパルスを追加)。
+  MISO は GPIO19 が液晶 DC と重複するため GPIO13 とした。起動時に I2C スキャンと
+  MPU9250 の `begin()` 戻り値を表示・ログするようにした。
 - 既知の対応: `Ethernet_Generic 2.8.1` は Arduino-ESP32 core 3.x の
   `Server::begin(uint16_t)` を実装していないため、`src/main.cpp` 内の薄い
   ラッパ `TcpServer` で回避している (core へのパッチ不要)。

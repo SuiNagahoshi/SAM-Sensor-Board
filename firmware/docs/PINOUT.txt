@@ -1,7 +1,7 @@
 =========================================================================
  ESP32 DevKit-C  ピン割り当て / 配線メモ   (firmware / sensor モニタ)
 =========================================================================
- 更新: 2026-10-17  (液晶の実配線に合わせて修正)
+ 更新: 2026-10-18  (USR-ES1 の配線を反映)
  モジュール: BME680 (I2C), MPU-9250 (I2C), ST7789 (SPI), USR-ES1/W5500 (SPI)
  ファーム側の実体定義: include/config.h  (platformio.ini の build_flags と
                         不一致ならコンパイル時に static_assert で止まる)
@@ -19,18 +19,26 @@
   3V3     BLK    バックライト (直結)
   --      MISO   未使用 (液晶は書き込み専用)
 
-[SPI USR-ES1/W5500]  ← 実際の配線を教えてください (未確定)
-   各ピンの接続先 GPIO を記入する:
-     SCLK = ?
-     MOSI = ?
-     MISO = ?
-     CS   = ?
-     RST  = ?
-   INT は未接続。
+[SPI USR-ES1/W5500]  (あなたから聞いた配線)
+  GPIO18  SCLK   液晶 SCK と共通バス
+  GPIO23  MOSI   液晶 MOSI と共通バス
+  GPIO13  MISO   ← ファーム側はこのピンを使用 (下記※)
+  GPIO16  CS
+  GPIO4   RST    (アクティブ Low。ファームでリセットパルスを出す)
+  --      INT    未接続
 
-   現在のファーム設定 (config.h):
-     PIN_SPI_MISO = -1  (MISO 未確定のため)
-     PIN_ETH_CS   =  5  (暫定。実際の CS に合わせて変更)
+  ※ MISO について:
+    指示は MISO=GPIO19 だが、GPIO19 は液晶の DC/RS が使用している。
+    DC は「液晶専用の制御出力」で SPI バスのデータ線ではないため、
+    W5500 の MISO(入力) とは同じ GPIO に同居できない (出力同士が衝突する)。
+    → ファームは PIN_SPI_MISO = 13 とした。W5500 の MISO 線を GPIO19 から
+      GPIO13 へ移すこと。別の空き GPIO にする場合は config.h を合わせる。
+      (MISO 線を移すまでの間も液晶と I2C センサは動作する)
+
+  現在のファーム設定 (config.h):
+     PIN_SPI_MISO = 13
+     PIN_ETH_CS   = 16
+     PIN_ETH_RST  =  4
 
 [I2C アドレス]  (実機に合わせて自動判別: 上が優先)
   BME680   0x77 -> 0x76

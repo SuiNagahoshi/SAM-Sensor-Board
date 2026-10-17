@@ -3,7 +3,8 @@
 //  ESP32 DevKit-C 環境センサ・モニタ
 //
 //    I2C : BME680 (温湿度/気圧/ガス), MPU-9250 (9軸)
-//    SPI (共有, HSPI 配線) : ST7789 (CS=15) と USR-ES1/W5500 (CS=18)
+//    SPI (共有) : ST7789 (SCK=18, MOSI=23, CS=15) と
+//                 USR-ES1/W5500 (SCLK=18, MOSI=23, MISO=13, CS=16, RST=4)
 //
 //    画面左 : BME680 の値 + USR-ES1 で受信したテキストメッセージ
 //    画面右 : MPU-9250 の各軸 (加速度/ジャイロ/磁気) をグラフ表示
@@ -113,6 +114,7 @@ static uint32_t bmeNextStart = 0;
 
 static float    ax, ay, az, gx, gy, gz, mx, my, mz;
 static bool     imuValid = false, imuOk = false;
+static int      imuErr = 0, imuReadErr = 0;   // 失敗コード (画面/シリアル表示用)
 static uint32_t imuNext = 0;
 
 static bool     ethOk = false;
@@ -244,10 +246,13 @@ static void drawImu() {
     drawImuRow(IMU_MAG_Y0 + 1 * IMU_ROW_H, "Y", my, 200.0f, C_MAG);
     drawImuRow(IMU_MAG_Y0 + 2 * IMU_ROW_H, "Z", mz, 200.0f, C_MAG);
   } else {
+    char s[24];
+    if (imuOk) snprintf(s, sizeof(s), "waiting (err %d)", imuReadErr);
+    else       snprintf(s, sizeof(s), "IMU not found (%d)", imuErr);
     tft.setTextFont(1);
     tft.setTextColor(C_ERR, C_BG);
     tft.setTextPadding(RIGHT_W - 8);
-    tft.drawString(imuOk ? "waiting..." : "IMU not found", IMU_LBL_X, IMU_ACC_Y0);
+    tft.drawString(s, IMU_LBL_X, IMU_ACC_Y0);
   }
 }
 
@@ -307,8 +312,25 @@ static void drawDynamic() {
 // ===========================================================================
 //  センサ
 // ===========================================================================
+static void i2cScan() {
+  Serial.println(F("I2C scan:"));
+  uint8_t found = 0;
+  for (uint8_t a = 1; a < 127; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) {
+      Serial.print(F("  found 0x"));
+      if (a < 16) Serial.print('0');
+      Serial.println(a, HEX);
+      found++;
+    }
+  }
+  if (!found) Serial.println(F("  (none)"));
+}
+
 static void setupSensors() {
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, I2C_FREQ_HZ);
+  delay(50);
+  i2cScan();
 
   // BME680
   if (bme.begin(BME680_ADDR_0) || bme.begin(BME680_ADDR_1)) {
@@ -327,17 +349,24 @@ static void setupSensors() {
   const uint8_t addrs[2] = { MPU9250_ADDR_0, MPU9250_ADDR_1 };
   for (uint8_t addr : addrs) {
     MPU9250* cand = new MPU9250(Wire, addr);
-    if (cand->begin() == 0) {
+    int r = cand->begin();
+    Serial.print(F("MPU9250 @0x"));
+    Serial.print(addr, HEX);
+    Serial.print(F(" begin()="));
+    Serial.println(r);
+    if (r == 0) {
       cand->setAccelRange(MPU9250::ACCEL_RANGE_2G);
       cand->setGyroRange(MPU9250::GYRO_RANGE_250DPS);
       cand->setDlpfBandwidth(MPU9250::DLPF_BANDWIDTH_41HZ);
       cand->setSrd(4);                 // 約200Hz
       imu = cand;
       imuOk = true;
+      imuErr = 0;
       Serial.print(F("MPU9250: OK @0x"));
       Serial.println(addr, HEX);
       break;
     }
+    if (imuErr == 0) imuErr = r;       // 最初に失敗したコードを保持 (画面表示用)
     delete cand;
   }
   if (!imuOk) Serial.println(F("MPU9250: not found"));
@@ -367,11 +396,15 @@ static void serviceImu(uint32_t now) {
   if (!imuOk) return;
   if ((int32_t)(now - imuNext) < 0) return;
   imuNext = now + IMU_PERIOD_MS;
-  if (imu->readSensor() == 0) {
+  int r = imu->readSensor();
+  if (r == 0) {
     ax = imu->getAccelX_mss(); ay = imu->getAccelY_mss(); az = imu->getAccelZ_mss();
     gx = imu->getGyroX_rads(); gy = imu->getGyroY_rads(); gz = imu->getGyroZ_rads();
     mx = imu->getMagX_uT();    my = imu->getMagY_uT();    mz = imu->getMagZ_uT();
     imuValid = true;
+    imuReadErr = 0;
+  } else {
+    imuReadErr = r;
   }
 }
 
@@ -417,13 +450,24 @@ static void serviceNet() {
 }
 
 static void setupNetwork() {
+  // USR-ES1(W5500) をリセットパルスで確実に初期化する
+  pinMode(PIN_ETH_RST, OUTPUT);
+  digitalWrite(PIN_ETH_RST, LOW);
+  delay(20);
+  digitalWrite(PIN_ETH_RST, HIGH);
+  delay(150);
+
   Ethernet.init(PIN_ETH_CS);
   Ethernet.begin(ETH_MAC, ETH_IP, ETH_DNS, ETH_GW, ETH_MASK);
   ethOk = (Ethernet.hardwareStatus() != EthernetNoHardware);
   if (ethOk) {
     server.begin();
     Serial.print(F("Ethernet: OK  IP="));
-    Serial.println(ETH_IP);
+    Serial.print(ETH_IP);
+    Serial.print(F("  CS="));
+    Serial.print(PIN_ETH_CS);
+    Serial.print(F(" MISO="));
+    Serial.println(PIN_SPI_MISO);
   } else {
     Serial.println(F("Ethernet: W5500 not found"));
   }

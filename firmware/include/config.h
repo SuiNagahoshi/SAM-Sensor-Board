@@ -18,12 +18,13 @@
 #define I2C_FREQ_HZ     400000UL
 
 // ---------------------------------------------------------------------------
-// SPI  (ST7789 が使用。USR-ES1[W5500] は同じバスに繋ぐ想定だが要確認)
+// SPI  (ST7789 と USR-ES1[W5500] が SCLK/MOSI を共有)
 //   液晶の実配線: SCK=18 / MOSI=23 / CS=15 / DC=19 / RST=17
+//   USR-ES1      : SCLK=18 / MOSI=23 / MISO=13 / CS=16 / RST=4  (INT 未接続)
 // ---------------------------------------------------------------------------
 #define PIN_SPI_SCK     18
-#define PIN_SPI_MISO    -1   // 液晶は書き込み専用で MISO 未使用。
-                             // USR-ES1(W5500) の MISO は未確定 (要確認)
+#define PIN_SPI_MISO    13   // USR-ES1(W5500) の MISO
+                             //   ※ 液晶 DC とは別の GPIO にする必要がある (GPIO19 は液晶 DC)
 #define PIN_SPI_MOSI    23
 
 #define PIN_TFT_CS      15   // ST7789 chip select
@@ -33,8 +34,8 @@
 // 3.3V 直結や未使用なら -1 のまま (その場合はここで制御しない)。
 #define PIN_TFT_BL      -1
 
-#define PIN_ETH_CS      5    // USR-ES1 (W5500) chip select (暫定値。実際の配線に合わせる)
-// USR-ES1 の RST は 3.3V に固定 (GPIO 未接続) 前提。
+#define PIN_ETH_CS      16   // USR-ES1 (W5500) chip select
+#define PIN_ETH_RST     4    // USR-ES1 (W5500) reset (active low)
 
 // ---- platformio.ini の TFT_eSPI ビルドフラグとの整合チェック ----
 static_assert(PIN_TFT_CS   == TFT_CS,   "config.h と platformio.ini の TFT_CS が不一致");
