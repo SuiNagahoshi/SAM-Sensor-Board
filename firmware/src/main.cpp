@@ -347,6 +347,26 @@ static void setupSensors() {
 
   // MPU-9250 (アドレス 0x68 -> 0x69 の順に試す)
   const uint8_t addrs[2] = { MPU9250_ADDR_0, MPU9250_ADDR_1 };
+
+  // --- 生 I2C で WHO_AM_I (0x75) を読み、実際のチップを特定する ---
+  //     ライブラリと同じ「repeated start」と「stop あり」の両方で読み比べる。
+  //     0x71=MPU9250 / 0x73=MPU9250 or MPU9255 / 0x70=MPU6500 / 0x68=MPU6050
+  for (uint8_t addr : addrs) {
+    Wire.beginTransmission(addr); Wire.write(0x75);
+    uint8_t e1 = Wire.endTransmission(false);
+    size_t  n1 = Wire.requestFrom((uint8_t)addr, (size_t)1);
+    int     v1 = (n1 == 1) ? Wire.read() : -1;
+
+    Wire.beginTransmission(addr); Wire.write(0x75);
+    uint8_t e2 = Wire.endTransmission(true);
+    size_t  n2 = Wire.requestFrom((uint8_t)addr, (size_t)1);
+    int     v2 = (n2 == 1) ? Wire.read() : -1;
+
+    Serial.printf("WHO_AM_I @0x%02X  rstart:e=%u n=%u v=0x%02X | stop:e=%u n=%u v=0x%02X\n",
+                  addr, (unsigned)e1, (unsigned)n1, (unsigned)(v1 < 0 ? 0xFF : v1),
+                  (unsigned)e2, (unsigned)n2, (unsigned)(v2 < 0 ? 0xFF : v2));
+  }
+
   for (uint8_t addr : addrs) {
     MPU9250* cand = new MPU9250(Wire, addr);
     int r = cand->begin();
@@ -354,7 +374,7 @@ static void setupSensors() {
     Serial.print(addr, HEX);
     Serial.print(F(" begin()="));
     Serial.println(r);
-    if (r == 0) {
+    if (r > 0) {                       // このライブラリは成功で 1 を返す
       cand->setAccelRange(MPU9250::ACCEL_RANGE_2G);
       cand->setGyroRange(MPU9250::GYRO_RANGE_250DPS);
       cand->setDlpfBandwidth(MPU9250::DLPF_BANDWIDTH_41HZ);
