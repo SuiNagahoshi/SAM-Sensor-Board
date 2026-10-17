@@ -2,12 +2,12 @@
 //  main.cpp
 //  ESP32 DevKit-C 環境センサ・モニタ
 //
-//    I2C : BME680 (温湿度/気圧/ガス), MPU-9250 (9軸)
+//    I2C : BME680 (温湿度/気圧/ガス), MPU-6500/9250 (加速度/ジャイロ)
 //    SPI (共有) : ST7789 (SCK=18, MOSI=23, CS=15) と
 //                 USR-ES1/W5500 (SCLK=18, MOSI=23, MISO=13, CS=16, RST=4)
 //
 //    画面左 : BME680 の値 + USR-ES1 で受信したテキストメッセージ
-//    画面右 : MPU-9250 の各軸 (加速度/ジャイロ/磁気) をグラフ表示
+//    画面右 : MPU-6500/9250 の各軸 (加速度/ジャイロ) をグラフ表示
 //
 //  処理落ち回避のため、センサ読出し・通信・描画をすべてノンブロッキングで
 //  周期実行する (loop 内で delay しない)。
@@ -19,7 +19,6 @@
 #include <SPI.h>
 #include <TFT_eSPI.h>
 #include <Adafruit_BME680.h>
-#include <MPU9250.h>
 #include <Ethernet_Generic.h>
 #include "config.h"
 
@@ -49,7 +48,6 @@ public:
 
 static TFT_eSPI       tft = TFT_eSPI();
 static Adafruit_BME680 bme(&Wire);
-static MPU9250*       imu = nullptr;     // アドレス自動判別のため setup で生成
 static TcpServer      server(TCP_PORT);
 static EthernetClient client;
 
@@ -114,6 +112,7 @@ static uint32_t bmeNextStart = 0;
 
 static float    ax, ay, az, gx, gy, gz, mx, my, mz;
 static bool     imuValid = false, imuOk = false;
+static bool     magOk = false;                // 磁気センサの有無 (MPU-6500 では false)
 static int      imuErr = 0, imuReadErr = 0;   // 失敗コード (画面/シリアル表示用)
 static uint32_t imuNext = 0;
 
@@ -242,9 +241,16 @@ static void drawImu() {
     drawImuRow(IMU_GYR_Y0 + 0 * IMU_ROW_H, "X", gx, 250.0f, C_GYR);
     drawImuRow(IMU_GYR_Y0 + 1 * IMU_ROW_H, "Y", gy, 250.0f, C_GYR);
     drawImuRow(IMU_GYR_Y0 + 2 * IMU_ROW_H, "Z", gz, 250.0f, C_GYR);
-    drawImuRow(IMU_MAG_Y0 + 0 * IMU_ROW_H, "X", mx, 200.0f, C_MAG);
-    drawImuRow(IMU_MAG_Y0 + 1 * IMU_ROW_H, "Y", my, 200.0f, C_MAG);
-    drawImuRow(IMU_MAG_Y0 + 2 * IMU_ROW_H, "Z", mz, 200.0f, C_MAG);
+    if (magOk) {
+      drawImuRow(IMU_MAG_Y0 + 0 * IMU_ROW_H, "X", mx, 200.0f, C_MAG);
+      drawImuRow(IMU_MAG_Y0 + 1 * IMU_ROW_H, "Y", my, 200.0f, C_MAG);
+      drawImuRow(IMU_MAG_Y0 + 2 * IMU_ROW_H, "Z", mz, 200.0f, C_MAG);
+    } else {
+      tft.setTextFont(1);
+      tft.setTextColor(C_LBL, C_BG);
+      tft.setTextPadding(RIGHT_W - 8);
+      tft.drawString("no magnetometer", IMU_LBL_X, IMU_MAG_Y0);
+    }
   } else {
     char s[24];
     if (imuOk) snprintf(s, sizeof(s), "waiting (err %d)", imuReadErr);
@@ -312,6 +318,71 @@ static void drawDynamic() {
 // ===========================================================================
 //  センサ
 // ===========================================================================
+
+// --- MPU-6500 / MPU-9250 (InvenSense 6 軸) 最小ドライバ --------------------
+//  実機の WHO_AM_I は 0x70 = MPU-6500 (磁気センサ無し) だったため、0x71/0x73
+//  しか受け付けない既存ライブラリは使わず、必要なレジスタだけ自前で読み書きする。
+//  加速度 [g] とジャイロ [dps] を取得する (磁気は非対応 = "--" 表示)。
+static uint8_t imuAddr = 0;
+
+static bool imuRegWrite(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(imuAddr);
+  Wire.write(reg);
+  Wire.write(val);
+  return Wire.endTransmission() == 0;
+}
+
+static bool imuRegRead(uint8_t reg, uint8_t* buf, size_t n) {
+  Wire.beginTransmission(imuAddr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((uint8_t)imuAddr, n) != n) return false;
+  for (size_t i = 0; i < n; i++) buf[i] = (uint8_t)Wire.read();
+  return true;
+}
+
+static bool imuBegin() {
+  static const uint8_t addrs[2] = { MPU9250_ADDR_0, MPU9250_ADDR_1 };
+  for (uint8_t a : addrs) {
+    imuAddr = a;
+    uint8_t who = 0;
+    if (!imuRegRead(0x75, &who, 1)) continue;          // WHO_AM_I
+    imuErr = who;
+    if (who != 0x70 && who != 0x71 && who != 0x73) continue;  // 6500 / 9250 / 9255
+
+    imuRegWrite(0x6B, 0x80);   // PWR_MGMT_1 : device reset
+    delay(100);
+    imuRegWrite(0x6B, 0x01);   // PWR_MGMT_1 : clock = PLL (gyro X)
+    imuRegWrite(0x6C, 0x00);   // PWR_MGMT_2 : accel / gyro enable
+    imuRegWrite(0x1C, 0x00);   // ACCEL_CONFIG  : ±2g
+    imuRegWrite(0x1B, 0x00);   // GYRO_CONFIG   : ±250 dps
+    imuRegWrite(0x1A, 0x03);   // CONFIG        : gyro DLPF 41Hz (1kHz)
+    imuRegWrite(0x1D, 0x03);   // ACCEL_CONFIG2 : accel DLPF 41Hz
+    imuRegWrite(0x19, 0x04);   // SMPLRT_DIV    : 1kHz / (1+4) = 200Hz
+    delay(50);
+
+    Serial.printf("MPU @0x%02X WHO_AM_I=0x%02X (%s) -> 6軸 OK\n", a, who,
+                  who == 0x70 ? "MPU-6500" : "MPU-9250/9255");
+    return true;
+  }
+  Serial.printf("MPU: not found (WHO_AM_I=0x%02X)\n", imuErr);
+  return false;
+}
+
+// 加速度 [g] (±2g, 16384 LSB/g) とジャイロ [dps] (±250, 131 LSB/dps) を読む
+static bool imuReadSensor() {
+  uint8_t b[14];                                   // 0x3B..0x48
+  if (!imuRegRead(0x3B, b, sizeof(b))) return false;
+  int16_t ar[3], gr[3];
+  for (int i = 0; i < 3; i++) {
+    ar[i] = (int16_t)((b[i * 2] << 8) | b[i * 2 + 1]);
+    gr[i] = (int16_t)((b[8 + i * 2] << 8) | b[8 + i * 2 + 1]);
+  }
+  ax = ar[0] / 16384.0f;  ay = ar[1] / 16384.0f;  az = ar[2] / 16384.0f;
+  gx = gr[0] / 131.0f;    gy = gr[1] / 131.0f;    gz = gr[2] / 131.0f;
+  return true;
+}
+
 static void i2cScan() {
   Serial.println(F("I2C scan:"));
   uint8_t found = 0;
@@ -345,51 +416,8 @@ static void setupSensors() {
     Serial.println(F("BME680: not found"));
   }
 
-  // MPU-9250 (アドレス 0x68 -> 0x69 の順に試す)
-  const uint8_t addrs[2] = { MPU9250_ADDR_0, MPU9250_ADDR_1 };
-
-  // --- 生 I2C で WHO_AM_I (0x75) を読み、実際のチップを特定する ---
-  //     ライブラリと同じ「repeated start」と「stop あり」の両方で読み比べる。
-  //     0x71=MPU9250 / 0x73=MPU9250 or MPU9255 / 0x70=MPU6500 / 0x68=MPU6050
-  for (uint8_t addr : addrs) {
-    Wire.beginTransmission(addr); Wire.write(0x75);
-    uint8_t e1 = Wire.endTransmission(false);
-    size_t  n1 = Wire.requestFrom((uint8_t)addr, (size_t)1);
-    int     v1 = (n1 == 1) ? Wire.read() : -1;
-
-    Wire.beginTransmission(addr); Wire.write(0x75);
-    uint8_t e2 = Wire.endTransmission(true);
-    size_t  n2 = Wire.requestFrom((uint8_t)addr, (size_t)1);
-    int     v2 = (n2 == 1) ? Wire.read() : -1;
-
-    Serial.printf("WHO_AM_I @0x%02X  rstart:e=%u n=%u v=0x%02X | stop:e=%u n=%u v=0x%02X\n",
-                  addr, (unsigned)e1, (unsigned)n1, (unsigned)(v1 < 0 ? 0xFF : v1),
-                  (unsigned)e2, (unsigned)n2, (unsigned)(v2 < 0 ? 0xFF : v2));
-  }
-
-  for (uint8_t addr : addrs) {
-    MPU9250* cand = new MPU9250(Wire, addr);
-    int r = cand->begin();
-    Serial.print(F("MPU9250 @0x"));
-    Serial.print(addr, HEX);
-    Serial.print(F(" begin()="));
-    Serial.println(r);
-    if (r > 0) {                       // このライブラリは成功で 1 を返す
-      cand->setAccelRange(MPU9250::ACCEL_RANGE_2G);
-      cand->setGyroRange(MPU9250::GYRO_RANGE_250DPS);
-      cand->setDlpfBandwidth(MPU9250::DLPF_BANDWIDTH_41HZ);
-      cand->setSrd(4);                 // 約200Hz
-      imu = cand;
-      imuOk = true;
-      imuErr = 0;
-      Serial.print(F("MPU9250: OK @0x"));
-      Serial.println(addr, HEX);
-      break;
-    }
-    if (imuErr == 0) imuErr = r;       // 最初に失敗したコードを保持 (画面表示用)
-    delete cand;
-  }
-  if (!imuOk) Serial.println(F("MPU9250: not found"));
+  // MPU-6500 / MPU-9250 (InvenSense 6軸, 自前ドライバ)
+  imuOk = imuBegin();
 }
 
 static void serviceBme(uint32_t now) {
@@ -416,15 +444,11 @@ static void serviceImu(uint32_t now) {
   if (!imuOk) return;
   if ((int32_t)(now - imuNext) < 0) return;
   imuNext = now + IMU_PERIOD_MS;
-  int r = imu->readSensor();
-  if (r == 0) {
-    ax = imu->getAccelX_mss(); ay = imu->getAccelY_mss(); az = imu->getAccelZ_mss();
-    gx = imu->getGyroX_rads(); gy = imu->getGyroY_rads(); gz = imu->getGyroZ_rads();
-    mx = imu->getMagX_uT();    my = imu->getMagY_uT();    mz = imu->getMagZ_uT();
+  if (imuReadSensor()) {
     imuValid = true;
     imuReadErr = 0;
   } else {
-    imuReadErr = r;
+    imuReadErr = -1;
   }
 }
 
