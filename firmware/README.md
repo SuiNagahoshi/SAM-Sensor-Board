@@ -5,8 +5,9 @@ ESP32 DevKit-C に接続した **BME680**・**InvenSense 6 軸 (MPU-6500/9250)**
 ESP32 Dev Module 用。
 
 - 画面 **左**: BME680 の温湿度・気圧・ガス (バー付き) と、USR-ES1 で受信した一言メッセージ
-- 画面 **右**: IMU の加速度 / ジャイロを各軸グラフ表示 (実機の `WHO_AM_I` は 0x70 の
-  **MPU-6500** で磁気センサが載っていないため、MAG 欄は "no magnetometer" 表示)
+- 画面 **右**: IMU の加速度 / ジャイロ / 磁気を各軸グラフ表示
+  (MPU 側 `WHO_AM_I` は 0x70。磁気 AK8963 は I2C バイパス → I2C マスタの順で自動検出し、
+  見つからない場合のみ MAG 欄に "no magnetometer" と表示)
 - PC とは USR-ES1 経由の **TCP** (ESP32 = サーバ) でやり取り
 
 ```
@@ -63,7 +64,7 @@ pio device monitor      # シリアルモニタ (115200bps)
 |-----------|------|
 | `bodmer/TFT_eSPI` | ST7789 表示 (高速・transactions 対応) |
 | `adafruit/Adafruit BME680 Library` | 温湿度/気圧/ガス (ノンブロッキング API 使用) |
-| (MPU はライブラリ不使用) | `src/main.cpp` 内の自前 I2C ドライバ (MPU-6500/9250 の 6 軸) |
+| (MPU/MAG はライブラリ不使用) | `src/main.cpp` 内の自前 I2C ドライバ (6 軸 + AK8963) |
 | `khoih-prog/Ethernet_Generic` | W5500 TCP (ESP32 対応) |
 
 ## 使い方
@@ -117,9 +118,9 @@ ESP32 側は受信すると画面左下の MSG 欄に折返し表示し、`OK` �
 - 2026-10-18 USR-ES1(W5500) の配線を反映: CS=16, RST=4 (リセットパルスを追加)。
   MISO は GPIO19 が液晶 DC と重複するため GPIO13 とした。起動時に I2C スキャンと
   MPU9250 の `begin()` 戻り値を表示・ログするようにした。
-- 2026-10-18 IMU は実機の `WHO_AM_I` が 0x70 (**MPU-6500**, 磁気センサ無し) と判明。
-  0x71/0x73 しか許容しない Bolder Flight ライブラリをやめ、加速度 [g] + ジャイロ [dps]
-  の自前 I2C ドライバ (`src/main.cpp`) に変更。MAG 欄は "no magnetometer" 表示。
+- 2026-10-18 IMU は実機の MPU 側 `WHO_AM_I` が 0x70 と判明 (0x71/0x73 のみ許容する
+  Bolder Flight ライブラリは使えない)。加速度 [g] + ジャイロ [dps] の自前 I2C ドライバに
+  変更。磁気 (AK8963) は I2C バイパス → I2C マスタの順で自動検出して 16bit/100Hz で読む。
 - 既知の対応: `Ethernet_Generic 2.8.1` は Arduino-ESP32 core 3.x の
   `Server::begin(uint16_t)` を実装していないため、`src/main.cpp` 内の薄い
   ラッパ `TcpServer` で回避している (core へのパッチ不要)。
