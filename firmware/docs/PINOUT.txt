@@ -1,7 +1,7 @@
 =========================================================================
  ESP32 DevKit-C  ピン割り当て / 配線メモ   (firmware / sensor モニタ)
 =========================================================================
- 更新: 2026-10-17
+ 更新: 2026-10-17  (液晶の実配線に合わせて修正)
  モジュール: BME680 (I2C), MPU-9250 (I2C), ST7789 (SPI), USR-ES1/W5500 (SPI)
  ファーム側の実体定義: include/config.h  (platformio.ini の build_flags と
                         不一致ならコンパイル時に static_assert で止まる)
@@ -9,17 +9,31 @@
 [I2C]  BME680 と MPU-9250 が共有 (400kHz)
   GPIO21  SDA    BME680 SDA / MPU-9250 SDA
   GPIO22  SCL    BME680 SCL / MPU-9250 SCL
-  3V3/GND は各モジュールへ供給
 
-[SPI]  ST7789 と USR-ES1 が共有バス (CS のみ別)
-  GPIO14  SCK    ST7789 SCL / USR-ES1 SCLK
-  GPIO13  MOSI   ST7789 SDA / USR-ES1 MOSI
-  GPIO12  MISO   USR-ES1 MISO のみ (ST7789 は書き込み専用)
-  GPIO15  CS     ST7789   (チップセレクト)
-  GPIO18  CS     USR-ES1  (チップセレクト)
-  GPIO2   DC     ST7789 データ/コマンド
-  GPIO4   RST    ST7789 リセット
-  --      RST    USR-ES1 の RST は 3.3V 固定 (GPIO 未接続)
+[SPI 液晶 ST7789]  実測の配線 (2026-10-17 確認)
+  GPIO18  SCK    ST7789 SCL/SCK
+  GPIO23  MOSI   ST7789 SDA/MOSI
+  GPIO15  CS     ST7789 CS
+  GPIO19  DC     ST7789 DC/RS
+  GPIO17  RST    ST7789 RES/RST
+  3V3     BLK    バックライト (直結)
+  --      MISO   未使用 (液晶は書き込み専用)
+
+[SPI USR-ES1/W5500]  ← 要確認 (下記★衝突のため)
+  回路図(sensor.kicad_sch)のラベル値:
+  GPIO18  CLK    (液晶 SCK と同一 = 共有バス)
+  GPIO23  MOSI   (液晶 MOSI と同一 = 共有バス)
+  GPIO19  MISO   ★ 液晶 DC と衝突
+  GPIO5   CS
+  GPIO4   RST
+  GPIO17  INT    ★ 液晶 RST と衝突
+
+  ★ 衝突: 液晶 DC=GPIO19 と W5500 MISO=GPIO19、液晶 RST=GPIO17 と
+     W5500 INT=GPIO17 が同じ GPIO になっている。両方を同時に使うには
+     どちらかを別 GPIO へ変更する必要がある。
+     現在は「液晶を最優先」で config.h は以下:
+        PIN_SPI_MISO = -1   (W5500 MISO 未確定)
+        PIN_ETH_CS   =  5   (回路図値。要確認)
 
 [I2C アドレス]  (実機に合わせて自動判別: 上が優先)
   BME680   0x77 -> 0x76
@@ -32,14 +46,13 @@
                   PC    = クライアント 192.168.1.10/24, 直結LANケーブル想定
   MAC アドレス  : DE:AD:BE:EF:FE:01
 
-[デバッグ時の確認ポイント]
-  * CS は初期化前に HIGH 固定 (ST7789=15, USR-ES1=18)
-  * SPI は 1 本のバスを 2 チップで共有。ST7789 描画中は W5500 に触らない
-  * シリアルログ 115200bps に各モジュールの OK/NG と 2 秒毎サマリを出力
-  * 画面右下に BME/IMU の検出状態と IP, 受信メッセージ数を表示
+[切り分けテスト]
+  pio run -e tft_test -t upload   … 液晶のみ (赤→緑→青→白→黒)
+  画面が真っ暗なままなら「バックライト / 電源 / ピン」を疑う。
 
-[参考: KiCad 図面との差異]
-  sensor.kicad_sch のグローバルラベルは VSPI (CLK=18/MOSI=23/MISO=19,
-  CS=5, RESET=4) 表記だが、本ファームは指示どおり ST7789 CS=15,
-  USR-ES1 CS=18 の構成で、SPI を GPIO12/13/14 に割り当てている。
-  (=CLK 18 と USR-ES1 CS 18 の衝突を避けるため)
+[バックライトが点かないときのチェック]
+  1. テスタで 液晶 VCC-GND = 約3.3V / BLK-GND = 約3.3V を確認
+  2. 液晶以外の配線を外し VCC/GND/BLK(3V3) だけで点灯するか確認
+  3. モジュールによっては BLK が LED のカソードで GND に落とすと点灯する
+     (点かない場合は BLK を GND にも試す。ただし自己責任で)
+  4. モジュールが 5V 入力(内部3.3Vレギュレータ)タイプか型番を確認

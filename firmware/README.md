@@ -24,18 +24,21 @@ docs/PROTOCOL.txt  … TCP 仕様と PC スクリプトの使い方
 |------|------|--------|
 | I2C SDA | 21 | BME680 / MPU-9250 (共有) |
 | I2C SCL | 22 | BME680 / MPU-9250 (共有) |
-| SPI SCK | 14 | ST7789 / USR-ES1 (共有) |
-| SPI MOSI | 13 | ST7789 / USR-ES1 (共有) |
-| SPI MISO | 12 | USR-ES1 のみ |
+| ST7789 SCK | 18 | ST7789 |
+| ST7789 MOSI | 23 | ST7789 |
 | ST7789 CS | 15 | ST7789 |
-| ST7789 DC | 2 | ST7789 |
-| ST7789 RST | 4 | ST7789 |
-| USR-ES1 CS | 18 | USR-ES1 (W5500) |
+| ST7789 DC | 19 | ST7789 |
+| ST7789 RST | 17 | ST7789 |
+| ST7789 BLK | 3V3 | バックライト (直結) |
+| ST7789 MISO | 未使用 | (書き込み専用) |
+| USR-ES1 CS | 5 | 要確認 (回路図値) |
 
-> メモ: `sensor.kicad_sch` のグローバルラベルは VSPI (CLK=18 等) 表記ですが、
-> 指示どおり ST7789 CS=15 / USR-ES1 CS=18 とし、SPI データ線を GPIO12/13/14 に
-> 割り当てています (CLK=18 と USR-ES1 CS=18 の衝突を避けるため)。
-> ST7789 は書き込み専用なので MISO は USR-ES1 のみが駆動します。
+> **重要(要確認): GPIO の衝突**
+> `sensor.kicad_sch` 上の USR-ES1 は CLK=18 / MOSI=23 / **MISO=19** / CS=5 /
+> RST=4 / **INT=17** です。液晶の実配線が SCK=18 / MOSI=23 / DC=19 / RST=17 のため、
+> **液晶 DC=19 と W5500 MISO=19**、**液晶 RST=17 と W5500 INT=17** が衝突します。
+> 液晶と USR-ES1 を同時に使うには、どちらかを別 GPIO へ変更してください。
+> 現在は液晶優先で `PIN_SPI_MISO=-1`, `PIN_ETH_CS=5` としています。
 
 ## ビルドと書き込み
 
@@ -98,6 +101,9 @@ ESP32 側は受信すると画面左下の MSG 欄に折返し表示し、`OK` �
 
 - 2026-10-17 初版。BME680/MPU-9250/ST7789/USR-ES1 を統合。TCP サーバ (5000) と
   PC 送信スクリプトを追加。ピンは ST7789 CS=15, USR-ES1 CS=18, SPI=12/13/14 に確定。
+- 2026-10-17 液晶の実配線に合わせて修正: ST7789 SCK=18, MOSI=23, CS=15, DC=19,
+  RST=17 (MISO 未使用)。`tft_test` 環境を追加。W5500 と GPIO19/17 が衝突するため
+  USR-ES1 側の配線は要確認 (`docs/PINOUT.txt` 参照)。
 - 既知の対応: `Ethernet_Generic 2.8.1` は Arduino-ESP32 core 3.x の
   `Server::begin(uint16_t)` を実装していないため、`src/main.cpp` 内の薄い
   ラッパ `TcpServer` で回避している (core へのパッチ不要)。

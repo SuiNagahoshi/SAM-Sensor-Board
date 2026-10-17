@@ -441,6 +441,12 @@ void setup() {
   pinMode(PIN_TFT_CS, OUTPUT); digitalWrite(PIN_TFT_CS, HIGH);
   pinMode(PIN_ETH_CS, OUTPUT); digitalWrite(PIN_ETH_CS, HIGH);
 
+#if PIN_TFT_BL >= 0
+  // バックライトを点灯 (GPIO 接続時のみ)
+  pinMode(PIN_TFT_BL, OUTPUT);
+  digitalWrite(PIN_TFT_BL, HIGH);
+#endif
+
   // ST7789 と W5500 で共有する SPI バス
   SPI.begin(PIN_SPI_SCK, PIN_SPI_MISO, PIN_SPI_MOSI, PIN_ETH_CS);
 
