@@ -104,6 +104,9 @@ ESP32 側は受信すると画面左下の MSG 欄に折返し表示し、`OK` �
 - 2026-10-17 液晶の実配線に合わせて修正: ST7789 SCK=18, MOSI=23, CS=15, DC=19,
   RST=17 (MISO 未使用)。`tft_test` 環境を追加。W5500 と GPIO19/17 が衝突するため
   USR-ES1 側の配線は要確認 (`docs/PINOUT.txt` 参照)。
+- 2026-10-18 液晶の表示を実機で確認 (`tft_test` で色が切り替わる)。ブレッドボード
+  配線では 40MHz が不安定だったため SPI クロックを 10MHz に低下。安定確認後に
+  20〜40MHz へ上げてよい (platformio.ini の SPI_FREQUENCY)。
 - 既知の対応: `Ethernet_Generic 2.8.1` は Arduino-ESP32 core 3.x の
   `Server::begin(uint16_t)` を実装していないため、`src/main.cpp` 内の薄い
   ラッパ `TcpServer` で回避している (core へのパッチ不要)。
