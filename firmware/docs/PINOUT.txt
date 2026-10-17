@@ -19,21 +19,18 @@
   3V3     BLK    バックライト (直結)
   --      MISO   未使用 (液晶は書き込み専用)
 
-[SPI USR-ES1/W5500]  ← 要確認 (下記★衝突のため)
-  回路図(sensor.kicad_sch)のラベル値:
-  GPIO18  CLK    (液晶 SCK と同一 = 共有バス)
-  GPIO23  MOSI   (液晶 MOSI と同一 = 共有バス)
-  GPIO19  MISO   ★ 液晶 DC と衝突
-  GPIO5   CS
-  GPIO4   RST
-  GPIO17  INT    ★ 液晶 RST と衝突
+[SPI USR-ES1/W5500]  ← 実際の配線を教えてください (未確定)
+   各ピンの接続先 GPIO を記入する:
+     SCLK = ?
+     MOSI = ?
+     MISO = ?
+     CS   = ?
+     RST  = ?
+   INT は未接続。
 
-  ★ 衝突: 液晶 DC=GPIO19 と W5500 MISO=GPIO19、液晶 RST=GPIO17 と
-     W5500 INT=GPIO17 が同じ GPIO になっている。両方を同時に使うには
-     どちらかを別 GPIO へ変更する必要がある。
-     現在は「液晶を最優先」で config.h は以下:
-        PIN_SPI_MISO = -1   (W5500 MISO 未確定)
-        PIN_ETH_CS   =  5   (回路図値。要確認)
+   現在のファーム設定 (config.h):
+     PIN_SPI_MISO = -1  (MISO 未確定のため)
+     PIN_ETH_CS   =  5  (暫定。実際の CS に合わせて変更)
 
 [I2C アドレス]  (実機に合わせて自動判別: 上が優先)
   BME680   0x77 -> 0x76
@@ -41,7 +38,8 @@
 
 [その他]
   ST7789 解像度 : 240 x 240
-  SPI クロック  : ST7789 40MHz / W5500 はライブラリ既定 (約14MHz)
+  SPI クロック  : 10MHz (ブレッドボード配線で 40MHz が不安定だったため。
+                  安定確認後に platformio.ini の SPI_FREQUENCY を上げてよい)
   TCP           : ESP32 = サーバ 192.168.1.50:5000 (固定IP)
                   PC    = クライアント 192.168.1.10/24, 直結LANケーブル想定
   MAC アドレス  : DE:AD:BE:EF:FE:01

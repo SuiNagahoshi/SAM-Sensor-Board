@@ -33,7 +33,7 @@
 // 3.3V 直結や未使用なら -1 のまま (その場合はここで制御しない)。
 #define PIN_TFT_BL      -1
 
-#define PIN_ETH_CS      5    // USR-ES1 (W5500) chip select (回路図値 / 要確認)
+#define PIN_ETH_CS      5    // USR-ES1 (W5500) chip select (暫定値。実際の配線に合わせる)
 // USR-ES1 の RST は 3.3V に固定 (GPIO 未接続) 前提。
 
 // ---- platformio.ini の TFT_eSPI ビルドフラグとの整合チェック ----
