@@ -1,0 +1,80 @@
+=========================================================================
+ ESP32 DevKit-C  ピン割り当て / 配線メモ   (firmware / sensor モニタ)
+=========================================================================
+ 更新: 2026-10-18  (W5500 検出不能の原因解明と MPU 偽装品の確定を反映)
+ モジュール: BME680 (I2C), MPU-9250 (I2C, ※実機は6軸の偽装品), ST7789 (SPI),
+              USR-ES1/W5500 (SPI)
+ ファーム側の実体定義: include/config.h  (platformio.ini の build_flags と
+                        不一致ならコンパイル時に static_assert で止まる)
+
+[I2C]  BME680 と MPU-9250 が共有 (400kHz)
+  GPIO21  SDA    BME680 SDA / MPU-9250 SDA
+  GPIO22  SCL    BME680 SCL / MPU-9250 SCL
+
+[SPI 液晶 ST7789]  実測の配線 (2026-10-17 確認)
+  GPIO18  SCK    ST7789 SCL/SCK
+  GPIO23  MOSI   ST7789 SDA/MOSI
+  GPIO15  CS     ST7789 CS
+  GPIO19  DC     ST7789 DC/RS
+  GPIO17  RST    ST7789 RES/RST
+  3V3     BLK    バックライト (直結)
+  --      MISO   未使用 (液晶は書き込み専用)
+
+[SPI USR-ES1/W5500]  (あなたから聞いた配線)
+  GPIO18  SCLK   液晶 SCK と共通バス
+  GPIO23  MOSI   液晶 MOSI と共通バス
+  GPIO13  MISO   ← ファーム側はこのピンを使用 (下記※)
+  GPIO16  CS
+  GPIO4   RST    (アクティブ Low。ファームでリセットパルスを出す)
+  --      INT    未接続
+
+  ※ MISO について (重要):
+    指示は MISO=GPIO19 だが、GPIO19 は液晶の DC/RS が使用している。
+    DC は「液晶専用の制御出力」で SPI バスのデータ線ではないため、
+    W5500 の MISO(入力) とは同じ GPIO に同居できない。
+    → ファームは PIN_SPI_MISO = 13 とした。W5500 の MISO 線を GPIO19 から
+      GPIO13 へ移すこと。別の空き GPIO にする場合は config.h と
+      platformio.ini の TFT_MISO の両方を合わせる (static_assert で検出)。
+
+  ※ TFT_MISO を -1 にしてはいけない理由:
+    TFT_eSPI は自前の SPIClass(VSPI) を作り、init() で
+      spi.begin(TFT_SCLK, TFT_MISO, TFT_MOSI, -1)
+    を呼ぶ。TFT_MISO = -1 だと ESP32 HAL が VSPI の既定ピン (GPIO19) に
+    MISO を接続し直してしまい、共有バスの MISO=GPIO13 が上書きされる。
+    その結果、W5500 を読めず "no chip" になる (液晶は書き込み専用なので
+    見た目は正常)。→ platformio.ini で TFT_MISO=13 を明示している。
+
+  現在のファーム設定 (config.h / platformio.ini):
+     PIN_SPI_MISO = 13   (TFT_MISO も 13)
+     PIN_ETH_CS   = 16
+     PIN_ETH_RST  =  4
+
+[I2C アドレス]  (実機に合わせて自動判別: 上が優先)
+  BME680   0x77 -> 0x76
+  MPU      0x68 -> 0x69   ← 実機の WHO_AM_I は 0x70 (MPU-6500 相当)。
+                            「MPU-9250」として購入したモジュールだが AK8963 も
+                            応答せず、6軸 (加速度/ジャイロ) の偽装品と確定済み
+                            (販売者に連絡済み)。加速度 [g] / ジャイロ [dps] は
+                            外部ライブラリ hideakitai/MPU9250 で取得。
+  MAG      0x0C (AK8963)  ← 本物の MPU-9250 ならライブラリが I2C バイパス
+                            (INT_PIN_CFG=0x22) で自動検出して読む。現在の
+                            モジュールは偽物のため MAG 欄は "no magnetometer"。
+
+[その他]
+  ST7789 解像度 : 240 x 320  (2.8 インチ, 縦 320px)
+  SPI クロック  : 10MHz (ブレッドボード配線で 40MHz が不安定だったため。
+                  安定確認後に platformio.ini の SPI_FREQUENCY を上げてよい)
+  TCP           : ESP32 = サーバ 192.168.1.50:5000 (固定IP)
+                  PC    = クライアント 192.168.1.10/24, 直結LANケーブル想定
+  MAC アドレス  : DE:AD:BE:EF:FE:01
+
+[切り分けテスト]
+  pio run -e tft_test -t upload   … 液晶のみ (赤→緑→青→白→黒)
+  画面が真っ暗なままなら「バックライト / 電源 / ピン」を疑う。
+
+[バックライトが点かないときのチェック]
+  1. テスタで 液晶 VCC-GND = 約3.3V / BLK-GND = 約3.3V を確認
+  2. 液晶以外の配線を外し VCC/GND/BLK(3V3) だけで点灯するか確認
+  3. モジュールによっては BLK が LED のカソードで GND に落とすと点灯する
+     (点かない場合は BLK を GND にも試す。ただし自己責任で)
+  4. モジュールが 5V 入力(内部3.3Vレギュレータ)タイプか型番を確認
