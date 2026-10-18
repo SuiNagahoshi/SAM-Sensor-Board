@@ -476,6 +476,31 @@ static void serviceNet() {
   }
 }
 
+// ---- W5500 生 SPI 診断 -----------------------------------------------------
+//  VERSIONR (共通レジスタ 0x0039) を直接読む。0x04 なら SPI/CS/MISO 配線は OK。
+//  Ethernet.begin() より前に呼び、"配線の問題" か "ライブラリ設定の問題" かを
+//  切り分けられるようにする。
+static uint8_t ethReadReg(uint16_t addr, uint8_t bsb) {
+  SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+  digitalWrite(PIN_ETH_CS, LOW);
+  delayMicroseconds(2);
+  SPI.transfer((uint8_t)(addr >> 8));
+  SPI.transfer((uint8_t)(addr & 0xFF));
+  SPI.transfer((uint8_t)((bsb << 3) | 0x00));   // BSB[7:3] | RWB=0(read) | OM=00
+  uint8_t v = (uint8_t)SPI.transfer(0x00);
+  digitalWrite(PIN_ETH_CS, HIGH);
+  SPI.endTransaction();
+  return v;
+}
+
+static void ethProbe() {
+  uint8_t ver = ethReadReg(0x0039, 0x00);        // VERSIONR
+  Serial.printf("W5500 probe: VERSIONR=0x%02X (expect 0x04)  CS=%d MISO=%d\n",
+                ver, PIN_ETH_CS, PIN_SPI_MISO);
+  if (ver != 0x04)
+    Serial.println(F("  -> W5500 が見えない: MISO=13 / CS=16 / RST=4 / 3V3 を確認"));
+}
+
 static void setupNetwork() {
   // USR-ES1(W5500) をリセットパルスで確実に初期化する
   pinMode(PIN_ETH_RST, OUTPUT);
@@ -483,6 +508,8 @@ static void setupNetwork() {
   delay(20);
   digitalWrite(PIN_ETH_RST, HIGH);
   delay(150);
+
+  ethProbe();
 
   Ethernet.init(PIN_ETH_CS);
   Ethernet.begin(ETH_MAC, ETH_IP, ETH_DNS, ETH_GW, ETH_MASK);

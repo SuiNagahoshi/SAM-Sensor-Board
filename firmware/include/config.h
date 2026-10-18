@@ -24,7 +24,10 @@
 // ---------------------------------------------------------------------------
 #define PIN_SPI_SCK     18
 #define PIN_SPI_MISO    13   // USR-ES1(W5500) の MISO
-                             //   ※ 液晶 DC とは別の GPIO にする必要がある (GPIO19 は液晶 DC)
+                             //   ※ 液晶 DC とは別の GPIO にする (GPIO19 は液晶 DC)。
+                             //   ※ platformio.ini の TFT_MISO にも同じ値を渡すこと。
+                             //     TFT_eSPI が自前で MISO を VSPI 既定 (GPIO19) に
+                             //     繋ぎ直してしまい、共有バスの MISO が壊れるため。
 #define PIN_SPI_MOSI    23
 
 #define PIN_TFT_CS      15   // ST7789 chip select
@@ -42,6 +45,7 @@ static_assert(PIN_TFT_CS   == TFT_CS,   "config.h と platformio.ini の TFT_CS 
 static_assert(PIN_TFT_DC   == TFT_DC,   "config.h と platformio.ini の TFT_DC が不一致");
 static_assert(PIN_TFT_RST  == TFT_RST,  "config.h と platformio.ini の TFT_RST が不一致");
 static_assert(PIN_SPI_SCK  == TFT_SCLK, "config.h と platformio.ini の TFT_SCLK が不一致");
+static_assert(PIN_SPI_MISO == TFT_MISO, "config.h と platformio.ini の TFT_MISO が不一致 (-1 は不可)");
 static_assert(PIN_SPI_MOSI == TFT_MOSI, "config.h と platformio.ini の TFT_MOSI が不一致");
 
 // ---------------------------------------------------------------------------

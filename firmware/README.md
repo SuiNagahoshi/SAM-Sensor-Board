@@ -103,7 +103,7 @@ ESP32 側は受信すると画面左下の MSG 欄に折返し表示し、`OK` �
 | シリアルに `BME680: not found` | I2C 21/22、3V3。アドレスは 0x77→0x76 を自動試行 |
 | シリアルに `IMU: MPU=--` | I2C 21/22。`WHO_AM_I` が 0x70/0x71/0x73 以外だと未対応 |
 | シリアルに `AK8963 WHO AM I = 0x..` / `Could not connect to AK8963` | 磁気が読み出せない個体。6 軸はそのまま動作 (MAG 欄は "no magnetometer") |
-| `Ethernet: W5500 not found` | USR-ES1 の CS(16)/RST(4)/MISO(13)、3V3。MISO が GPIO19 のままだと検出できない |
+| `Ethernet: W5500 not found` | まず `W5500 probe: VERSIONR=0x04` を確認。0x04 以外なら MISO=13 / CS=16 / RST=4 / 3V3 の配線。VERSIONR=0x04 なのに not found なら `TFT_MISO` 設定を確認 |
 | PC から繋がらない | PC の IP を 192.168.1.x/24 に固定、ポート 5000、FW を確認 |
 | 画面更新がカクつく | `DRAW_PERIOD_MS` を大きく、`SPI_FREQUENCY` を下げる (platformio.ini) |
 
@@ -126,6 +126,13 @@ ESP32 側は受信すると画面左下の MSG 欄に折返し表示し、`OK` �
   有効化して 0x0C を直接読む。磁気が無い個体では `setup()` が false を返して
   `update()` が止まるため、公開 API の `update_accel_gyro()` / `update_mag()` を
   個別に呼び、6 軸だけでも必ず動くようにしている。
+- 2026-10-18 **W5500 が検出できない原因を修正**: TFT_eSPI は自前の
+  `SPIClass(VSPI)` で `spi.begin(SCLK, TFT_MISO, MOSI, -1)` を呼ぶため、
+  `TFT_MISO=-1` だと ESP32 HAL が VSPI 既定の **GPIO19 (= 液晶 DC)** に MISO を
+  接続し直し、共有バスの MISO=GPIO13 を上書きしていた。`platformio.ini` で
+  `TFT_MISO=13` を明示し、`config.h` に整合の `static_assert` を追加。
+  さらに起動時に W5500 の `VERSIONR` (0x0039) を生 SPI で読み、
+  配線不良かどうかを切り分けられるようにした。
 - 既知の対応: `Ethernet_Generic 2.8.1` は Arduino-ESP32 core 3.x の
   `Server::begin(uint16_t)` を実装していないため、`src/main.cpp` 内の薄い
   ラッパ `TcpServer` で回避している (core へのパッチ不要)。
