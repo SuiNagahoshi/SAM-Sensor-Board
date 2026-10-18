@@ -2,7 +2,7 @@
 //  main.cpp
 //  ESP32 DevKit-C 環境センサ・モニタ
 //
-//    I2C : BME680 (温湿度/気圧/ガス), MPU-6500/9250 (加速度/ジャイロ)
+//    I2C : BME680 (温湿度/気圧/ガス), MPU-9250/6500 (加速度/ジャイロ/磁気)
 //    SPI (共有) : ST7789 (SCK=18, MOSI=23, CS=15) と
 //                 USR-ES1/W5500 (SCLK=18, MOSI=23, MISO=13, CS=16, RST=4)
 //
@@ -19,6 +19,7 @@
 #include <SPI.h>
 #include <TFT_eSPI.h>
 #include <Adafruit_BME680.h>
+#include <MPU9250.h>
 #include <Ethernet_Generic.h>
 #include "config.h"
 
@@ -48,6 +49,7 @@ public:
 
 static TFT_eSPI       tft = TFT_eSPI();
 static Adafruit_BME680 bme(&Wire);
+static MPU9250        imu;                  // hideakitai/MPU9250 ライブラリ
 static TcpServer      server(TCP_PORT);
 static EthernetClient client;
 
@@ -112,8 +114,7 @@ static uint32_t bmeNextStart = 0;
 
 static float    ax, ay, az, gx, gy, gz, mx, my, mz;
 static bool     imuValid = false, imuOk = false;
-static bool     magOk = false;                // 磁気センサの有無 (MPU-6500 では false)
-static int      imuErr = 0, imuReadErr = 0;   // 失敗コード (画面/シリアル表示用)
+static bool     magOk = false;                // 磁気 (AK8963) の有無
 static uint32_t imuNext = 0;
 
 static bool     ethOk = false;
@@ -252,13 +253,10 @@ static void drawImu() {
       tft.drawString("no magnetometer", IMU_LBL_X, IMU_MAG_Y0);
     }
   } else {
-    char s[24];
-    if (imuOk) snprintf(s, sizeof(s), "waiting (err %d)", imuReadErr);
-    else       snprintf(s, sizeof(s), "IMU not found (%d)", imuErr);
     tft.setTextFont(1);
     tft.setTextColor(C_ERR, C_BG);
     tft.setTextPadding(RIGHT_W - 8);
-    tft.drawString(s, IMU_LBL_X, IMU_ACC_Y0);
+    tft.drawString(imuOk ? "waiting..." : "IMU not found", IMU_LBL_X, IMU_ACC_Y0);
   }
 }
 
@@ -319,158 +317,54 @@ static void drawDynamic() {
 //  センサ
 // ===========================================================================
 
-// --- MPU-6500 / MPU-9250 (6 軸) + AK8963 磁気 の最小ドライバ ---------------
-//  実機の MPU 側 WHO_AM_I は 0x70 で、0x71/0x73 しか許容しない既存ライブラリは
-//  使えない。必要なレジスタだけ自前で読み書きする。
-//  磁気 (AK8963) は MPU の補助 I2C バス側にいるため、
-//    1) I2C バイパスが効けば ESP32 から 0x0C へ直接アクセス
-//    2) だめなら MPU の I2C マスタ (I2C_SLV0) 経由
-//  の順に自動で試す。
-static uint8_t imuAddr = 0;
-
-enum MagMode : uint8_t { MAG_NONE = 0, MAG_DIRECT, MAG_MASTER };
-static MagMode magMode = MAG_NONE;
-
-static bool imuRegWrite(uint8_t reg, uint8_t val) {
-  Wire.beginTransmission(imuAddr);
-  Wire.write(reg);
-  Wire.write(val);
-  return Wire.endTransmission() == 0;
+// --- MPU-9250 / MPU-6500 (hideakitai/MPU9250 外部ライブラリ) -----------------
+//  WHO_AM_I = 0x70 (MPU-6500) / 0x71 (MPU-9250) / 0x73 (MPU-9255) をすべて
+//  認識し、磁気 (AK8963) の有無もライブラリ自身が判定する。AK8963 は MPU に
+//  内蔵 (補助 I2C バス) なので、ライブラリが I2C バイパスを有効化して 0x0C を
+//  直接読み出す。
+//
+//  磁気が無い個体では setup() が false を返し update() が動かなくなるため、
+//  ここでは公開 API の update_accel_gyro() / update_mag() を個別に呼び、
+//  6 軸だけでも必ず読めるようにしている。
+static void imuApplySettings(MPU9250Setting& st) {
+  st.accel_fs_sel     = ACCEL_FS_SEL::A2G;         // ±2g     (16384 LSB/g)
+  st.gyro_fs_sel      = GYRO_FS_SEL::G250DPS;      // ±250dps (131 LSB/dps)
+  st.mag_output_bits  = MAG_OUTPUT_BITS::M16BITS;  // 16bit (0.15 uT/LSB)
+  st.fifo_sample_rate = FIFO_SAMPLE_RATE::SMPL_200HZ;
+  st.gyro_dlpf_cfg    = GYRO_DLPF_CFG::DLPF_41HZ;
+  st.accel_dlpf_cfg   = ACCEL_DLPF_CFG::DLPF_45HZ;
 }
 
-static bool imuRegRead(uint8_t reg, uint8_t* buf, size_t n) {
-  Wire.beginTransmission(imuAddr);
-  Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom((uint8_t)imuAddr, n) != n) return false;
-  for (size_t i = 0; i < n; i++) buf[i] = (uint8_t)Wire.read();
-  return true;
-}
-
-// --- AK8963 アクセス (magMode で経路を切り替える) --------------------------
-//  レジスタ: 0x00 WIA / 0x03 HXL.. / 0x0A CNTL1 / 0x0B CNTL2
-static bool magReadRegs(uint8_t reg, uint8_t* buf, size_t n) {
-  if (magMode == MAG_DIRECT) {                 // バイパス: 0x0C へ直接
-    Wire.beginTransmission(0x0C);
-    Wire.write(reg);
-    if (Wire.endTransmission(false) != 0) return false;
-    if (Wire.requestFrom((uint8_t)0x0C, n) != n) return false;
-    for (size_t i = 0; i < n; i++) buf[i] = (uint8_t)Wire.read();
-    return true;
-  }
-  imuRegWrite(0x25, 0x0C | 0x80);              // I2C_SLV0_ADDR : AK8963 + read
-  imuRegWrite(0x26, reg);                      // I2C_SLV0_REG
-  imuRegWrite(0x27, 0x80 | (uint8_t)n);        // I2C_SLV0_CTRL: EN | n byte
-  delay(2);
-  return imuRegRead(0x49, buf, n);             // EXT_SENS_DATA_00
-}
-
-static bool magWriteReg(uint8_t reg, uint8_t val) {
-  if (magMode == MAG_DIRECT) {
-    Wire.beginTransmission(0x0C);
-    Wire.write(reg);
-    Wire.write(val);
-    return Wire.endTransmission() == 0;
-  }
-  imuRegWrite(0x25, 0x0C);                     // I2C_SLV0_ADDR : AK8963 + write
-  imuRegWrite(0x26, reg);                      // I2C_SLV0_REG
-  imuRegWrite(0x63, val);                      // I2C_SLV0_DO
-  imuRegWrite(0x27, 0x81);                     // I2C_SLV0_CTRL: EN | 1 byte
-  delay(2);
-  return true;
-}
-
-// 磁気センサを探して連続測定モードにする。見つかれば magOk = true。
-static bool magBegin() {
-  uint8_t who = 0;
-
-  // (1) I2C バイパス (AK8963 が ESP32 側のバスに 0x0C で現れる)
-  imuRegWrite(0x6B, 0x01);       // MPU を起床
-  imuRegWrite(0x37, 0x02);       // INT_PIN_CFG : I2C_BYPASS_EN
-  delay(10);
-  magMode = MAG_DIRECT;
-  bool ok = magReadRegs(0x00, &who, 1) && who == 0x48;
-
-  // (2) だめなら MPU の I2C マスタ経由
-  if (!ok) {
-    imuRegWrite(0x37, 0x00);     // バイパス解除
-    imuRegWrite(0x6A, 0x00);     // USER_CTRL
-    imuRegWrite(0x6A, 0x20);     // USER_CTRL : I2C_MST_EN
-    imuRegWrite(0x24, 0x0D);     // I2C_MST_CTRL : 400kHz
-    magMode = MAG_MASTER;
-    who = 0;
-    ok = magReadRegs(0x00, &who, 1) && who == 0x48;
-  }
-
-  if (!ok) {
-    magMode = MAG_NONE;
-    Serial.printf("MAG(AK8963): not found (WIA=0x%02X)\n", who);
-    return false;
-  }
-
-  magWriteReg(0x0B, 0x01);       // CNTL2 : soft reset
-  delay(10);
-  magWriteReg(0x0A, 0x00);       // CNTL1 : power down
-  delay(10);
-  magWriteReg(0x0A, 0x16);       // CNTL1 : 16bit / 連続測定 100Hz
-  delay(10);
-  Serial.printf("MAG(AK8963): OK (%s, 16bit/100Hz)\n",
-                magMode == MAG_DIRECT ? "bypass" : "I2C master");
-  return true;
-}
-
-// 磁気 [uT] (16bit: 約 0.15 uT/LSB)
-static bool magReadSensor() {
-  uint8_t b[7];                                // HXL..HZH + ST2
-  if (!magReadRegs(0x03, b, sizeof(b))) return false;
-  if (b[6] & 0x08) return false;               // ST2.HOFL: オーバーフロー
-  mx = (int16_t)((b[1] << 8) | b[0]) * 0.15f;
-  my = (int16_t)((b[3] << 8) | b[2]) * 0.15f;
-  mz = (int16_t)((b[5] << 8) | b[4]) * 0.15f;
-  return true;
-}
-
+// MPU 本体 (磁気があれば AK8963 も) を初期化する
 static bool imuBegin() {
-  static const uint8_t addrs[2] = { MPU9250_ADDR_0, MPU9250_ADDR_1 };
-  for (uint8_t a : addrs) {
-    imuAddr = a;
-    uint8_t who = 0;
-    if (!imuRegRead(0x75, &who, 1)) continue;          // WHO_AM_I
-    imuErr = who;
-    if (who != 0x70 && who != 0x71 && who != 0x73) continue;  // 6500 / 9250 / 9255
+  MPU9250Setting st;
+  imuApplySettings(st);
 
-    imuRegWrite(0x6B, 0x80);   // PWR_MGMT_1 : device reset
-    delay(100);
-    imuRegWrite(0x6B, 0x01);   // PWR_MGMT_1 : clock = PLL (gyro X)
-    imuRegWrite(0x6C, 0x00);   // PWR_MGMT_2 : accel / gyro enable
-    imuRegWrite(0x1C, 0x00);   // ACCEL_CONFIG  : ±2g
-    imuRegWrite(0x1B, 0x00);   // GYRO_CONFIG   : ±250 dps
-    imuRegWrite(0x1A, 0x03);   // CONFIG        : gyro DLPF 41Hz (1kHz)
-    imuRegWrite(0x1D, 0x03);   // ACCEL_CONFIG2 : accel DLPF 41Hz
-    imuRegWrite(0x19, 0x04);   // SMPLRT_DIV    : 1kHz / (1+4) = 200Hz
-    delay(50);
-
-    Serial.printf("MPU @0x%02X WHO_AM_I=0x%02X (%s) -> 6軸 OK\n", a, who,
-                  who == 0x70 ? "MPU-6500" : "MPU-9250/9255");
-    magOk = magBegin();
-    return true;
+  imu.verbose(true);                                 // WHO_AM_I 診断を表示
+  bool both = imu.setup(MPU9250_ADDR_0, st);         // 0x68
+  imuOk = imu.isConnectedMPU9250();
+  if (!imuOk) {                                      // 0x68 に居なければ 0x69 を試す
+    both = imu.setup(MPU9250_ADDR_1, st);
+    imuOk = imu.isConnectedMPU9250();
   }
-  Serial.printf("MPU: not found (WHO_AM_I=0x%02X)\n", imuErr);
-  return false;
+  magOk = both;                                      // AK8963 まで見つかれば true
+
+  Serial.printf("IMU: MPU=%s MAG(AK8963)=%s\n",
+                imuOk ? "ok" : "--", magOk ? "ok" : "--");
+  return imuOk;
 }
 
-// 加速度 [g] (±2g, 16384 LSB/g) とジャイロ [dps] (±250, 131 LSB/dps) を読む
+// 加速度 [g] / ジャイロ [dps] / 磁気 [uT] を読み出す
 static bool imuReadSensor() {
-  uint8_t b[14];                                   // 0x3B..0x48
-  if (!imuRegRead(0x3B, b, sizeof(b))) return false;
-  int16_t ar[3], gr[3];
-  for (int i = 0; i < 3; i++) {
-    ar[i] = (int16_t)((b[i * 2] << 8) | b[i * 2 + 1]);
-    gr[i] = (int16_t)((b[8 + i * 2] << 8) | b[8 + i * 2 + 1]);
+  imu.update_accel_gyro();                           // has_connected に依存しない
+  ax = imu.getAccX();   ay = imu.getAccY();   az = imu.getAccZ();
+  gx = imu.getGyroX();  gy = imu.getGyroY();  gz = imu.getGyroZ();
+  if (magOk) {
+    imu.update_mag();
+    mx = imu.getMagX() / 10.0f;                      // mG -> uT
+    my = imu.getMagY() / 10.0f;
+    mz = imu.getMagZ() / 10.0f;
   }
-  ax = ar[0] / 16384.0f;  ay = ar[1] / 16384.0f;  az = ar[2] / 16384.0f;
-  gx = gr[0] / 131.0f;    gy = gr[1] / 131.0f;    gz = gr[2] / 131.0f;
-  if (magOk) magReadSensor();
   return true;
 }
 
@@ -506,10 +400,10 @@ static void setupSensors() {
     Serial.println(F("BME680: not found"));
   }
 
-  // MPU-6500 / MPU-9250 (6軸) + 磁気 (AK8963), 自前ドライバ
-  imuOk = imuBegin();
+  // MPU-9250 / MPU-6500 (+ 磁気 AK8963) — hideakitai/MPU9250 ライブラリ
+  imuBegin();
 
-  // 最後に I2C スキャン (バイパス有効時は磁気センサ 0x0C も見える)
+  // I2C スキャン (磁気がバイパスで見えていれば 0x0C も並ぶ)
   i2cScan();
 }
 
@@ -537,12 +431,8 @@ static void serviceImu(uint32_t now) {
   if (!imuOk) return;
   if ((int32_t)(now - imuNext) < 0) return;
   imuNext = now + IMU_PERIOD_MS;
-  if (imuReadSensor()) {
-    imuValid = true;
-    imuReadErr = 0;
-  } else {
-    imuReadErr = -1;
-  }
+  imuReadSensor();
+  imuValid = true;
 }
 
 // ===========================================================================

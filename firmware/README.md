@@ -1,13 +1,14 @@
 # ESP32 環境センサ・モニタ (firmware)
 
-ESP32 DevKit-C に接続した **BME680**・**InvenSense 6 軸 (MPU-6500/9250)**・**ST7789 液晶**・
+ESP32 DevKit-C に接続した **BME680**・**InvenSense 9軸/6軸 (MPU-9250/6500)**・**ST7789 液晶**・
 **USR-ES1 (W5500)** をまとめて扱う Arduino ファームウェアです。PlatformIO / Espressif
 ESP32 Dev Module 用。
 
 - 画面 **左**: BME680 の温湿度・気圧・ガス (バー付き) と、USR-ES1 で受信した一言メッセージ
 - 画面 **右**: IMU の加速度 / ジャイロ / 磁気を各軸グラフ表示
-  (MPU 側 `WHO_AM_I` は 0x70。磁気 AK8963 は I2C バイパス → I2C マスタの順で自動検出し、
-  見つからない場合のみ MAG 欄に "no magnetometer" と表示)
+  (IMU は外部ライブラリ `hideakitai/MPU9250` を使用。MPU 側 `WHO_AM_I` は実機で 0x70。
+   内蔵の磁気 AK8963 はライブラリが I2C バイパス経由で自動検出し、
+   見つからない場合のみ MAG 欄に "no magnetometer" と表示して 6 軸で動作を続ける)
 - PC とは USR-ES1 経由の **TCP** (ESP32 = サーバ) でやり取り
 
 ```
@@ -64,7 +65,7 @@ pio device monitor      # シリアルモニタ (115200bps)
 |-----------|------|
 | `bodmer/TFT_eSPI` | ST7789 表示 (高速・transactions 対応) |
 | `adafruit/Adafruit BME680 Library` | 温湿度/気圧/ガス (ノンブロッキング API 使用) |
-| (MPU/MAG はライブラリ不使用) | `src/main.cpp` 内の自前 I2C ドライバ (6 軸 + AK8963) |
+| (MPU/MAG は上記ライブラリ) | `hideakitai/MPU9250` — 6軸 + AK8963 磁気 (WHO_AM_I 0x70/0x71/0x73 対応) |
 | `khoih-prog/Ethernet_Generic` | W5500 TCP (ESP32 対応) |
 
 ## 使い方
@@ -84,7 +85,7 @@ ESP32 側は受信すると画面左下の MSG 欄に折返し表示し、`OK` �
 ## 処理落ち対策 (設計方針)
 
 - `loop()` 内で `delay()` せず、すべて `millis()` の周期判定で非ブロッキング実行。
-  - MPU-9250: 5ms 毎 (約 200Hz) に `readSensor()`
+  - MPU-9250: 5ms 毎 (約 200Hz) にライブラリの `update_accel_gyro()` (+ 磁気があれば `update_mag()`)
   - BME680 : 3 秒毎に `beginReading()` を開始し、`remainingReadingMillis()` が
     0 になったら `endReading()`。ガスヒータ待ちでループを止めない。
   - 画面   : 80ms 毎 (約 12.5fps)。`startWrite()/endWrite()` で 1 フレームを
@@ -100,7 +101,8 @@ ESP32 側は受信すると画面左下の MSG 欄に折返し表示し、`OK` �
 |------|------|
 | 画面が真っ暗/白 | ST7789 の CS(15)/DC(19)/RST(17)、バックライト(BLK→3V3)、SCK(18)/MOSI(23) を確認 |
 | シリアルに `BME680: not found` | I2C 21/22、3V3。アドレスは 0x77→0x76 を自動試行 |
-| シリアルに `MPU: not found` | I2C 21/22。`WHO_AM_I` が 0x70/0x71/0x73 以外だと未対応 |
+| シリアルに `IMU: MPU=--` | I2C 21/22。`WHO_AM_I` が 0x70/0x71/0x73 以外だと未対応 |
+| シリアルに `AK8963 WHO AM I = 0x..` / `Could not connect to AK8963` | 磁気が読み出せない個体。6 軸はそのまま動作 (MAG 欄は "no magnetometer") |
 | `Ethernet: W5500 not found` | USR-ES1 の CS(16)/RST(4)/MISO(13)、3V3。MISO が GPIO19 のままだと検出できない |
 | PC から繋がらない | PC の IP を 192.168.1.x/24 に固定、ポート 5000、FW を確認 |
 | 画面更新がカクつく | `DRAW_PERIOD_MS` を大きく、`SPI_FREQUENCY` を下げる (platformio.ini) |
@@ -118,9 +120,12 @@ ESP32 側は受信すると画面左下の MSG 欄に折返し表示し、`OK` �
 - 2026-10-18 USR-ES1(W5500) の配線を反映: CS=16, RST=4 (リセットパルスを追加)。
   MISO は GPIO19 が液晶 DC と重複するため GPIO13 とした。起動時に I2C スキャンと
   MPU9250 の `begin()` 戻り値を表示・ログするようにした。
-- 2026-10-18 IMU は実機の MPU 側 `WHO_AM_I` が 0x70 と判明 (0x71/0x73 のみ許容する
-  Bolder Flight ライブラリは使えない)。加速度 [g] + ジャイロ [dps] の自前 I2C ドライバに
-  変更。磁気 (AK8963) は I2C バイパス → I2C マスタの順で自動検出して 16bit/100Hz で読む。
+- 2026-10-18 IMU は実機の MPU 側 `WHO_AM_I` が 0x70 (MPU-6500 相当の値) と判明。
+  自前ドライバをやめ、**外部ライブラリ `hideakitai/MPU9250` に統一**した。この
+  ライブラリは 0x70/0x71/0x73 をすべて認識し、内蔵磁気 AK8963 は I2C バイパスを
+  有効化して 0x0C を直接読む。磁気が無い個体では `setup()` が false を返して
+  `update()` が止まるため、公開 API の `update_accel_gyro()` / `update_mag()` を
+  個別に呼び、6 軸だけでも必ず動くようにしている。
 - 既知の対応: `Ethernet_Generic 2.8.1` は Arduino-ESP32 core 3.x の
   `Server::begin(uint16_t)` を実装していないため、`src/main.cpp` 内の薄い
   ラッパ `TcpServer` で回避している (core へのパッチ不要)。

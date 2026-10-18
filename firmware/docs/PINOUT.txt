@@ -42,13 +42,13 @@
 
 [I2C アドレス]  (実機に合わせて自動判別: 上が優先)
   BME680   0x77 -> 0x76
-  MPU      0x68 -> 0x69   ← 実機の MPU 側 WHO_AM_I は 0x70
-                            加速度 [g] + ジャイロ [dps] を取得。
-  MAG      0x0C (AK8963)  ← MPU の補助 I2C バス側。I2C バイパス
-                            (INT_PIN_CFG=0x02) を有効にすると ESP32 から 0x0C と
-                            して見える。効かない場合は MPU の I2C マスタ (I2C_SLV0)
-                            経由で 16bit/100Hz 連続測定。見つからない場合は MAG 欄に
-                            "no magnetometer" と表示。
+  MPU      0x68 -> 0x69   ← 実機の MPU 側 WHO_AM_I は 0x70 (MPU-6500 相当の値)。
+                            加速度 [g] + ジャイロ [dps] は外部ライブラリで取得。
+  MAG      0x0C (AK8963)  ← MPU に内蔵 (補助 I2C バス)。外部ライブラリ
+                            hideakitai/MPU9250 が INT_PIN_CFG=0x22 で I2C バイパスを
+                            有効化し、ESP32 から 0x0C として直接読み出す
+                            (16bit)。見つからない場合は MAG 欄に
+                            "no magnetometer" と表示 (6 軸は動作する)。
 
 [その他]
   ST7789 解像度 : 240 x 240
