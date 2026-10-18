@@ -61,7 +61,7 @@
                             モジュールは偽物のため MAG 欄は "no magnetometer"。
 
 [その他]
-  ST7789 解像度 : 240 x 240
+  ST7789 解像度 : 240 x 320  (2.8 インチ, 縦 320px)
   SPI クロック  : 10MHz (ブレッドボード配線で 40MHz が不安定だったため。
                   安定確認後に platformio.ini の SPI_FREQUENCY を上げてよい)
   TCP           : ESP32 = サーバ 192.168.1.50:5000 (固定IP)

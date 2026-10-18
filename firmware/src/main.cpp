@@ -79,16 +79,16 @@ static const uint16_t C_OK     = 0x07E0;
 #define HDR_H       16
 
 #define ENV_X       4
-#define ENV_LBL_Y0  18
-#define ENV_BLOCK_H 36
+#define ENV_LBL_Y0  20
+#define ENV_BLOCK_H 44
 #define ENV_BAR_W   112
 #define ENV_BAR_H   6
 
 #define MSG_X       2
-#define MSG_Y       162
+#define MSG_Y       196
 #define MSG_W       116
-#define MSG_H       76
-#define MSG_LINES   5
+#define MSG_H       118
+#define MSG_LINES   9
 #define MSG_COLS    18
 
 #define IMU_LBL_X   124
@@ -97,10 +97,10 @@ static const uint16_t C_OK     = 0x07E0;
 #define IMU_BAR_X   184
 #define IMU_BAR_W   52
 #define IMU_BAR_H   7
-#define IMU_ROW_H   14
-#define IMU_ACC_Y0  32
-#define IMU_GYR_Y0  90
-#define IMU_MAG_Y0  148
+#define IMU_ROW_H   16
+#define IMU_ACC_Y0  34
+#define IMU_GYR_Y0  100
+#define IMU_MAG_Y0  166
 
 // ---------------------------------------------------------------------------
 // 状態
@@ -294,14 +294,14 @@ static void drawStatus() {
 
   tft.setTextColor(ethOk ? C_OK : C_ERR, C_BG);
   snprintf(s, sizeof(s), "IP %u.%u.%u.%u", ETH_IP_0, ETH_IP_1, ETH_IP_2, ETH_IP_3);
-  tft.drawString(s, IMU_LBL_X, 196);
+  tft.drawString(s, IMU_LBL_X, 258);
 
   tft.setTextColor(C_AXIS, C_BG);
   snprintf(s, sizeof(s), "BME:%s IMU:%s", bmeOk ? "ok" : "--", imuOk ? "ok" : "--");
-  tft.drawString(s, IMU_LBL_X, 208);
+  tft.drawString(s, IMU_LBL_X, 272);
 
   snprintf(s, sizeof(s), "RX msg:%lu", (unsigned long)msgCount);
-  tft.drawString(s, IMU_LBL_X, 220);
+  tft.drawString(s, IMU_LBL_X, 286);
 }
 
 static void drawDynamic() {
